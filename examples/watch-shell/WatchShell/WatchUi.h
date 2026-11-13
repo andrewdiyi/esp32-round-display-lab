@@ -289,9 +289,17 @@ inline void draw(uint16_t *p, const WatchState &s) {
     else
       std::strcpy(text, "Sync time in Wi-Fi");
     label(p, text, 240, 296, smallFont, dim);
-    for (int i = -1; i <= 1; i++)
-      circle(p, 240 + i * 17, 367, 4, cyan);
-    label(p, "Swipe up for apps", 240, 397, smallFont, dim);
+    rounded(p, 137, 333, 206, 58, 26, card);
+    if (s.weather.valid) {
+      weatherIcon(p, s.weather.code, s.weather.isDay, 182, 360, .55f);
+      std::snprintf(text, sizeof(text), "%.0f C", s.weather.temperature);
+      label(p, text, 268, 345, mediumFont, fg);
+    } else
+      label(p, s.weatherLoading ? "Loading weather..." : "Weather --", 240, 351, smallFont, dim);
+    label(p,
+          s.weather.valid && (!s.connected || s.weather.error[0]) ? "Cached weather"
+                                                                  : "Swipe up for apps",
+          240, 405, smallFont, dim);
     return;
   }
   if (s.page == Page::Apps) {

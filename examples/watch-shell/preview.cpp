@@ -20,18 +20,22 @@ int main(int argc, char **argv) {
   state.ax = .1f;
   state.ay = -.3f;
   state.az = .95f;
-  state.ntpSyncedAt = 1794550755;
+  state.ntpSyncedAt = 1794535755;
+  state.weather.valid = true;
+  state.weather.temperature = 29;
+  state.weather.code = 53;
   std::vector<uint16_t> pixels(480 * 480);
-  const char *names[] = {"face",          "apps",
-                         "controls",      "settings",
-                         "stopwatch",     "timer",
-                         "sensors",       "info",
-                         "wifi",          "wifi-networks",
-                         "wifi-keyboard", "wifi-symbols",
-                         "weather",       "weather-forecast",
+  const char *names[] = {"face",           "apps",
+                         "controls",       "settings",
+                         "stopwatch",      "timer",
+                         "sensors",        "info",
+                         "wifi",           "wifi-networks",
+                         "wifi-keyboard",  "wifi-symbols",
+                         "weather",        "weather-forecast",
                          "weather-cities", "display"};
   for (int i = 0; i < 16; i++) {
     state.page = i < 9 ? Page(i) : Page::Wifi;
+    state.connected = i == 0;
     if (i == 9) {
       state.wifiView = WifiView::Networks;
       state.networks = {{"Home Wi-Fi", -42, false, true},

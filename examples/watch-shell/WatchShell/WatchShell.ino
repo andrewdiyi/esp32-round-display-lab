@@ -381,6 +381,9 @@ void tap(float x, float y) {
         requestTimeSync();
       else
         setPage(Page::Wifi);
+    } else if (x >= 130 && x < 350 && y >= 330 && y < 395) {
+      ui.weatherView = WeatherView::Now;
+      setPage(Page::Weather);
     } else
       setPage(Page::Apps);
     break;
