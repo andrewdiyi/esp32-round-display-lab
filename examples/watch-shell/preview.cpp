@@ -21,10 +21,22 @@ int main(int argc, char **argv) {
   state.ay = -.3f;
   state.az = .95f;
   std::vector<uint16_t> pixels(480 * 480);
-  const char *names[] = {"face",  "apps",    "controls", "settings", "stopwatch",
-                         "timer", "sensors", "info",     "wifi"};
-  for (int i = 0; i < 9; i++) {
-    state.page = Page(i);
+  const char *names[] = {"face",      "apps",          "controls",      "settings",
+                         "stopwatch", "timer",         "sensors",       "info",
+                         "wifi",      "wifi-networks", "wifi-keyboard", "wifi-symbols"};
+  for (int i = 0; i < 12; i++) {
+    state.page = i < 9 ? Page(i) : Page::Wifi;
+    if (i == 9) {
+      state.wifiView = WifiView::Networks;
+      state.networks = {{"Home Wi-Fi", -42, false, true},
+                        {"Guest network", -61, true, true},
+                        {"A very long network name example", -75, false, true}};
+    } else if (i >= 10) {
+      state.wifiView = WifiView::Password;
+      std::strcpy(state.selectedSSID, "Home Wi-Fi");
+      std::strcpy(state.password, "Preview123!");
+      state.keyboardMode = i == 11 ? 2 : 0;
+    }
     watchui::draw(pixels.data(), state);
     std::ofstream file(std::string(argv[1]) + "/" + names[i] + ".ppm", std::ios::binary);
     file << "P6\n480 480\n255\n";

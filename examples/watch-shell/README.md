@@ -28,18 +28,26 @@
 - **Motion**：加速度、角速度和倾斜指示。数值是板卡坐标系。
 - **Device**：CPU、屏幕、Flash / PSRAM、可用内存、ADC 电压、固件版本。没有电池时，Battery input 不能作为电量判断。
 - **Settings**：亮度滑条、表盘自动旋转、12 / 24 小时格式、15 / 30 / 60 秒或不自动熄屏。设置保存到 NVS。
-- **Wi-Fi**：开关与手机网页配网；连接互联网后自动 NTP 校时并更新 RTC。
+- **Wi-Fi**：在圆屏上扫描网络、输入密码并连接；连接互联网后自动 NTP 校时并更新 RTC。
 
 熄屏只关闭背光并暂停绘图，不是 ESP32 深度睡眠。计时器和秒表不跨断电保存。
 
-## Wi-Fi 配网
+## 在圆屏上连接 Wi-Fi
 
-1. 打开 **Wi-Fi → Set up Wi-Fi**。
-2. 用手机连接圆屏显示的 `RoundLab-xxxx` 热点，输入圆屏上的临时密码。
-3. 在浏览器打开 `http://192.168.4.1`，选择或输入 **2.4 GHz** 网络名和密码，点击 **Connect**。
-4. 成功连接后热点会自动关闭，设备使用该网络自动校时；之后开机自动重连。连接失败可重新提交配置。
+1. 打开 **Wi-Fi**。未连接时自动扫描附近的 **2.4 GHz** 网络；已连接时点 **Scan networks**。
+2. 网络按信号强度排序，每页三项，上下滑动翻页；点 **Rescan** 重新扫描。
+3. 点击自己的网络，在屏幕键盘输入密码，然后点 **Connect**。开放网络无需输入密码。
+4. 显示 **Connected** 和 IP 地址后即可使用，凭据会保存到设备，之后开机自动连接。
 
-Wi-Fi 凭据只保存到设备 NVS，不写入源码或串口状态。首次启动默认关闭 Wi-Fi；未联网也能使用 RTC 或 USB 校时。
+![On-device Wi-Fi setup](../../docs/watch-wifi.png)
+
+图中使用演示网络与密码。整个流程在圆屏上完成，无需手机、电脑或配网热点。
+
+键盘支持全部可打印 ASCII 字符：**Shift** 切换大小写，**123 → #+= → ABC** 切换数字、符号和字母，**Space** 输入空格，**Del** 删除末尾字符。密码为 8–63 字符，默认隐藏；点 **Show / Hide** 切换显示，输入框显示末尾内容。输入密码期间不会自动熄屏。连接失败后返回 **Try again** 页面，可修改密码重试；未成功连接的密码不会覆盖已保存网络。
+
+左上角或右滑返回上一级：密码 → 网络列表 → Wi-Fi 状态 → 应用网格。Wi-Fi 状态页可以关闭无线网络。
+
+支持可扫描到的开放网络和 WPA/WPA2/WPA3 Personal 网络；不提供隐藏网络名称输入、企业认证或网页登录。当前英文字体将 SSID 中的非 ASCII 字符显示为 `?`，连接仍使用完整原始 SSID。密码只保存在设备 NVS，不写入源码或串口状态。未联网也能使用 RTC 或 USB 校时。
 
 ## 构建与烧录
 
@@ -60,7 +68,7 @@ Wi-Fi 凭据只保存到设备 NVS，不写入源码或串口状态。首次启�
 .venv/bin/python examples/watch-shell/watch_control.py
 .venv/bin/python examples/watch-shell/watch_control.py --page apps --capture build/watch-shell/apps.png
 
-# 在电脑上生成九个页面，不连接设备
+# 在电脑上生成页面及 Wi-Fi 列表、键盘预览，不连接设备
 mkdir -p build/watch-shell/preview
 c++ -std=c++17 -O2 examples/watch-shell/preview.cpp -o build/watch-shell/preview-ui
 build/watch-shell/preview-ui build/watch-shell/preview
@@ -69,7 +77,7 @@ build/watch-shell/preview-ui build/watch-shell/preview
 .venv/bin/python scripts/generate_watch_fonts.py
 ```
 
-串口每行一条命令：`STATUS`、`TIME <UTC epoch>`、`WAKE`、`PAGE <name>`、`CAPTURE`。页面名为 `face / apps / controls / settings / stopwatch / timer / sensors / info / wifi`。截图协议与 Gravity Clock 相同，返回 RGB565 小端像素。
+串口每行一条命令：`STATUS`、`TIME <UTC epoch>`、`WAKE`、`PAGE <name>`、`CAPTURE`。页面名为 `face / apps / controls / settings / stopwatch / timer / sensors / info / wifi`。截图协议与 Gravity Clock 相同，返回 RGB565 小端像素。`STATUS` 包含 `scanning`、`network_count`、`connecting` 和 `ntp_synced_at`（最后一次 NTP 同步的 UTC epoch，尚未同步时为 0），不包含网络密码。
 
 `WatchUi.h` 负责绘制和页面状态，`WatchShell.ino` 负责设备、触摸、应用逻辑、网络与持久化。添加内置应用直接增加页面和对应绘制、点击逻辑即可；当前没有动态安装应用、手机通知同步或后台应用管理。
 
@@ -80,3 +88,5 @@ build/watch-shell/preview-ui build/watch-shell/preview
 2026-11-13：固件编译、烧录校验、RTC 读时与 USB 校时成功；九个页面通过同源绘图预览检查，表盘通过设备 framebuffer 截图检查。修复显示偏移后，实机操作确认画面居中、应用点击和滑动正常，并打开 Wi-Fi 配网入口。串口状态确认触摸和 IMU 应答。
 
 尚未完成实际家庭网络连接、NTP 自动校时、倒计时到时蜂鸣及长时间运行验证。电脑预览与 framebuffer 截图无法验证物理屏幕的扫描偏移，因此显示稳定性也依赖上述实机观察。
+
+0.2 版移除网页配网，加入设备端扫描和密码键盘。已编译、刷入并校验，实机扫描到 5 个网络并检查了列表 framebuffer；字母和符号键盘通过同源绘图预览检查。等待在圆屏上输入真实网络密码后验证连接与 NTP。

@@ -1,8 +1,6 @@
 #include <Arduino.h>
 #include <Preferences.h>
 #include <WiFi.h>
-#include <WebServer.h>
-#include <DNSServer.h>
 #include <esp_sntp.h>
 #include <sys/time.h>
 #include "Display_ST7701.h"
@@ -13,15 +11,14 @@ WatchState ui;
 Preferences settings;
 Orientation orientation;
 Vec3 acceleration, rotationRate;
-WebServer web(80);
-DNSServer dns;
 uint8_t imuAddress = 0x6b;
 bool imuOK = false, clockOK = false, touchOK = false, dirty = true, asleep = false;
 uint32_t imuErrors = 0, touchErrors = 0, lastSample = 0, lastInteraction = 0, lastFrame = 0,
          lastPoll = 0;
 uint32_t stopwatchBase = 0, stopwatchStarted = 0, timerDeadline = 0, timerSelected = 180000;
-uint32_t connectedAt = 0, connectStarted = 0, lastSensorFrame = 0, buzzerUntil = 0;
-bool joinPending = false, ntpStarted = false;
+uint32_t connectStarted = 0, lastSensorFrame = 0, buzzerUntil = 0;
+bool saveNetwork = false, ntpStarted = false;
+time_t ntpSyncedAt = 0;
 volatile bool ntpPending = false, touchIRQ = false;
 bool touching = false, wakeTouch = false, longTouch = false, brightnessDrag = false;
 float startX = 0, startY = 0, touchX = 0, touchY = 0, touchAngle = 0, displayAngle = 0,
@@ -135,8 +132,21 @@ void setPage(Page page) {
   asleep = false;
   Set_Backlight(ui.brightness);
   lastInteraction = millis();
+  if (page == Page::Wifi && !ui.connected && !ui.connecting)
+    scanWifi();
+  if (page != Page::Wifi && !ui.connecting) {
+    memset(ui.password, 0, sizeof(ui.password));
+    ui.showPassword = false;
+  }
 }
 void back() {
+  if (ui.page == Page::Wifi && ui.wifiView != WifiView::Status) {
+    ui.wifiView = ui.wifiView == WifiView::Password ? WifiView::Networks : WifiView::Status;
+    memset(ui.password, 0, sizeof(ui.password));
+    ui.showPassword = false;
+    dirty = true;
+    return;
+  }
   setPage(ui.page == Page::Apps || ui.page == Page::Controls ? Page::Face : Page::Apps);
 }
 void screenOff() {
@@ -152,139 +162,135 @@ void saveSettings() {
   // after committing settings so the panel cannot retain a displaced frame.
   ESP_ERROR_CHECK(esp_lcd_rgb_panel_restart(panel_handle));
 }
-void startConnection() {
-  String ssid = settings.getString("ssid", "");
-  if (!ssid.length()) {
-    strcpy(ui.wifiMessage, "Set up a 2.4 GHz network");
-    return;
-  }
-  WiFi.mode(ui.portal ? WIFI_AP_STA : WIFI_STA);
-  WiFi.begin(ssid.c_str(), settings.getString("password", "").c_str());
+void joinNetwork(bool saveOnSuccess) {
+  WiFi.setAutoReconnect(false);
+  WiFi.disconnect();
+  WiFi.mode(WIFI_STA);
+  WiFi.setMinSecurity(ui.selectedOpen ? WIFI_AUTH_OPEN : WIFI_AUTH_WPA_PSK);
+  WiFi.begin(ui.selectedSSID, ui.password);
   ESP_ERROR_CHECK(esp_lcd_rgb_panel_restart(panel_handle));
+  ui.connected = false;
+  ui.connecting = true;
+  ui.connectionFailed = false;
+  ui.wifiView = WifiView::Status;
+  saveNetwork = saveOnSuccess;
   connectStarted = millis();
-  strcpy(ui.wifiMessage, "Connecting...");
+  strcpy(ui.wifiMessage, "Joining selected network");
   dirty = true;
 }
-void stopPortal() {
-  web.stop();
-  dns.stop();
-  WiFi.softAPdisconnect(false);
-  ui.portal = false;
-  WiFi.mode(ui.wifiEnabled ? WIFI_STA : WIFI_OFF);
+void startConnection() {
+  String ssid = settings.getString("ssid", "");
+  if (!ssid.length())
+    return;
+  strlcpy(ui.selectedSSID, ssid.c_str(), sizeof(ui.selectedSSID));
+  strlcpy(ui.password, settings.getString("password", "").c_str(), sizeof(ui.password));
+  ui.selectedOpen = !ui.password[0];
+  joinNetwork(false);
+}
+void scanWifi() {
+  if (ui.scanning)
+    return;
+  if (!ui.wifiEnabled) {
+    ui.wifiEnabled = true;
+    settings.putBool("wifi", true);
+  }
+  WiFi.mode(WIFI_STA);
+  ui.wifiView = WifiView::Networks;
+  ui.networks.clear();
+  ui.networkOffset = 0;
+  WiFi.scanDelete();
+  ui.scanning = WiFi.scanNetworks(true) == WIFI_SCAN_RUNNING;
+  strcpy(ui.wifiMessage, ui.scanning ? "Scanning..." : "Scan failed. Tap Rescan");
+  ESP_ERROR_CHECK(esp_lcd_rgb_panel_restart(panel_handle));
   dirty = true;
 }
 void toggleWifi() {
   ui.wifiEnabled = !ui.wifiEnabled;
   settings.putBool("wifi", ui.wifiEnabled);
-  if (ui.wifiEnabled) {
-    WiFi.mode(WIFI_STA);
-    startConnection();
-  } else {
-    if (ui.portal)
-      stopPortal();
+  if (ui.wifiEnabled)
+    scanWifi();
+  else {
     WiFi.disconnect();
     WiFi.mode(WIFI_OFF);
-    ui.connected = false;
+    WiFi.scanDelete();
+    ui.connected = ui.connecting = ui.scanning = false;
+    ui.wifiView = WifiView::Status;
+    memset(ui.password, 0, sizeof(ui.password));
+    saveNetwork = false;
     ntpStarted = false;
   }
   ESP_ERROR_CHECK(esp_lcd_rgb_panel_restart(panel_handle));
   dirty = true;
 }
-String escapeHtml(String value) {
-  value.replace("&", "&amp;");
-  value.replace("\"", "&quot;");
-  value.replace("<", "&lt;");
-  value.replace(">", "&gt;");
-  return value;
-}
-void portalPage() {
-  String html =
-      R"HTML(<!doctype html><html><meta name="viewport" content="width=device-width,initial-scale=1"><meta charset="utf-8"><title>Round Lab Wi-Fi</title><style>body{font:17px system-ui;background:#0b121a;color:#eef4f7;margin:36px auto;max-width:420px;padding:20px}h1{color:#55ddd0}label{display:block;margin-top:24px}input,button{box-sizing:border-box;width:100%;padding:14px;border:0;border-radius:12px;font:inherit;margin-top:8px}input{background:#243140;color:white}button{background:#55ddd0;color:#102026;margin-top:30px}small{color:#9fb0bf}</style><h1>Round Lab</h1><p>Connect your watch to Wi-Fi.</p><small>Use a 2.4 GHz network. Its password is stored on the watch.</small><form action="/join" method="post"><label>Network name (SSID)</label><input name="ssid" list="networks" maxlength="32" required><datalist id="networks">)HTML";
-  int count = WiFi.scanComplete();
-  for (int i = 0; i < count; i++)
-    html += "<option value=\"" + escapeHtml(WiFi.SSID(i)) + "\">";
-  html +=
-      R"HTML(</datalist><label>Password</label><input name="password" type="password" maxlength="63" autocomplete="new-password"><button>Connect</button></form><p><small>The watch will close setup after connecting. Internet access enables automatic time sync.</small></p></html>)HTML";
-  web.send(200, "text/html; charset=utf-8", html);
-}
-void startPortal() {
-  ui.wifiEnabled = true;
-  settings.putBool("wifi", true);
-  WiFi.mode(WIFI_AP_STA);
-  snprintf(ui.apName, sizeof(ui.apName), "RoundLab-%04X", unsigned(ESP.getEfuseMac() & 0xffff));
-  snprintf(ui.apPassword, sizeof(ui.apPassword), "%08lx", (unsigned long)esp_random());
-  if (!WiFi.softAP(ui.apName, ui.apPassword)) {
-    strcpy(ui.wifiMessage, "Could not start setup");
-    dirty = true;
-    return;
-  }
-  ui.portal = true;
-  strcpy(ui.wifiMessage, "Waiting for network");
-  connectedAt = 0;
-  dns.start(53, "*", WiFi.softAPIP());
-  web.begin();
-  WiFi.scanNetworks(true);
-  ESP_ERROR_CHECK(esp_lcd_rgb_panel_restart(panel_handle));
-  dirty = true;
-}
-void setupPortalRoutes() {
-  web.on("/", HTTP_GET, portalPage);
-  web.onNotFound(portalPage);
-  web.on("/join", HTTP_POST, []() {
-    String ssid = web.arg("ssid"), password = web.arg("password");
-    if (ssid.length() == 0 || ssid.length() > 32 ||
-        (password.length() != 0 && password.length() < 8) || password.length() > 63) {
-      web.send(400, "text/plain", "Enter an SSID and an empty or 8-63 character password.");
-      return;
-    }
-    settings.putString("ssid", ssid);
-    settings.putString("password", password);
-    ESP_ERROR_CHECK(esp_lcd_rgb_panel_restart(panel_handle));
-    web.send(200, "text/html; charset=utf-8",
-             "<meta name=viewport content='width=device-width'><body "
-             "style='background:#0b121a;color:white;font:20px "
-             "system-ui;padding:36px'><h1>Connecting...</h1><p>Check the watch for connection "
-             "status. If the password is incorrect, return to setup and try again.</p></body>");
-    joinPending = true;
-  });
-}
 void networkLoop() {
-  if (ui.portal) {
-    dns.processNextRequest();
-    web.handleClient();
-  }
-  if (joinPending) {
-    joinPending = false;
-    startConnection();
+  if (ui.scanning) {
+    int count = WiFi.scanComplete();
+    if (count != WIFI_SCAN_RUNNING) {
+      ui.scanning = false;
+      for (int i = 0; i < count; i++) {
+        WifiNetwork net = {};
+        strlcpy(net.ssid, WiFi.SSID(i).c_str(), sizeof(net.ssid));
+        if (!net.ssid[0])
+          continue;
+        net.rssi = WiFi.RSSI(i);
+        wifi_auth_mode_t auth = WiFi.encryptionType(i);
+        net.open = auth == WIFI_AUTH_OPEN;
+        net.supported = net.open || auth == WIFI_AUTH_WPA_PSK || auth == WIFI_AUTH_WPA2_PSK ||
+                        auth == WIFI_AUTH_WPA_WPA2_PSK || auth == WIFI_AUTH_WPA3_PSK ||
+                        auth == WIFI_AUTH_WPA2_WPA3_PSK;
+        auto duplicate =
+            std::find_if(ui.networks.begin(), ui.networks.end(),
+                         [&](const WifiNetwork &n) { return !strcmp(n.ssid, net.ssid); });
+        if (duplicate == ui.networks.end())
+          ui.networks.push_back(net);
+        else if (net.rssi > duplicate->rssi)
+          *duplicate = net;
+      }
+      std::sort(ui.networks.begin(), ui.networks.end(),
+                [](const WifiNetwork &a, const WifiNetwork &b) { return a.rssi > b.rssi; });
+      WiFi.scanDelete();
+      strcpy(ui.wifiMessage, count < 0 ? "Scan failed. Tap Rescan" : "Use a 2.4 GHz network");
+      dirty = true;
+    }
   }
   bool connected = ui.wifiEnabled && WiFi.status() == WL_CONNECTED;
   if (connected != ui.connected) {
     ui.connected = connected;
     dirty = true;
     if (connected) {
-      connectedAt = millis();
+      ui.connecting = false;
+      ui.connectionFailed = false;
       strlcpy(ui.ip, WiFi.localIP().toString().c_str(), sizeof(ui.ip));
       strlcpy(ui.network, WiFi.SSID().c_str(), sizeof(ui.network));
+      if (saveNetwork) {
+        settings.putString("ssid", ui.selectedSSID);
+        settings.putString("password", ui.password);
+        ESP_ERROR_CHECK(esp_lcd_rgb_panel_restart(panel_handle));
+        saveNetwork = false;
+      }
+      memset(ui.password, 0, sizeof(ui.password));
+      WiFi.setAutoReconnect(true);
       if (!ntpStarted) {
         sntp_set_time_sync_notification_cb(timeSynchronized);
         configTime(0, 0, "pool.ntp.org", "time.cloudflare.com");
         ntpStarted = true;
       }
-    } else {
-      strcpy(ui.wifiMessage, "Not connected");
-      connectedAt = 0;
-    }
+    } else if (!ui.connecting)
+      strcpy(ui.wifiMessage, "Disconnected. Reconnecting...");
   }
-  if (ui.wifiEnabled && !connected && connectStarted && millis() - connectStarted > 20000) {
-    strcpy(ui.wifiMessage, "Check network / password");
-    connectStarted = 0;
+  if (ui.connecting && millis() - connectStarted > 20000) {
+    WiFi.disconnect();
+    ui.connecting = false;
+    ui.connectionFailed = true;
+    strcpy(ui.wifiMessage, "Connection failed. Try again");
+    ui.wifiView = WifiView::Password;
+    saveNetwork = false;
     dirty = true;
   }
-  if (ui.portal && connected && connectedAt && millis() - connectedAt > 8000)
-    stopPortal();
   if (ntpPending) {
     ntpPending = false;
-    setClock(time(nullptr));
+    ntpSyncedAt = time(nullptr);
+    setClock(ntpSyncedAt);
     dirty = true;
   }
 }
@@ -382,12 +388,62 @@ void tap(float x, float y) {
     }
     break;
   case Page::Wifi:
-    if (ui.portal) {
-      if (y > 340 && y < 415)
-        stopPortal();
-    } else if (y >= 295 && y < 365)
-      startPortal();
-    else if (y >= 365 && y < 440)
+    if (ui.wifiView == WifiView::Networks) {
+      if (ui.scanning)
+        break;
+      if (y >= 385 && y < 441 && x >= 152 && x <= 328) {
+        scanWifi();
+        break;
+      }
+      int row = int((y - 140) / 74);
+      int index = ui.networkOffset + row;
+      if (x >= 82 && x < 398 && y >= 140 && y < 354 && row < 3 && index < int(ui.networks.size())) {
+        const auto &net = ui.networks[index];
+        if (!net.supported)
+          break;
+        strlcpy(ui.selectedSSID, net.ssid, sizeof(ui.selectedSSID));
+        ui.selectedOpen = net.open;
+        memset(ui.password, 0, sizeof(ui.password));
+        if (settings.getString("ssid", "") == ui.selectedSSID)
+          strlcpy(ui.password, settings.getString("password", "").c_str(), sizeof(ui.password));
+        ui.keyboardMode = 0;
+        ui.uppercase = ui.showPassword = ui.connectionFailed = false;
+        ui.wifiView = WifiView::Password;
+        if (net.open)
+          joinNetwork(true);
+        dirty = true;
+      }
+    } else if (ui.wifiView == WifiView::Password) {
+      size_t length = strlen(ui.password);
+      char key = watchui::keyboardCharacter(ui, x, y);
+      if (y >= 140 && y < 180 && x >= 320 && x < 390)
+        ui.showPassword = !ui.showPassword;
+      else if (key && length < sizeof(ui.password) - 1) {
+        ui.password[length] = key;
+        ui.password[length + 1] = 0;
+      } else if (y >= 334 && y < 376) {
+        if (x >= 64 && x < 136)
+          ui.uppercase = !ui.uppercase;
+        else if (x >= 145 && x < 215)
+          ui.keyboardMode = (ui.keyboardMode + 1) % 3;
+        else if (x >= 222 && x < 308 && length < sizeof(ui.password) - 1) {
+          ui.password[length] = ' ';
+          ui.password[length + 1] = 0;
+        } else if (x >= 320 && x < 390 && length)
+          ui.password[length - 1] = 0;
+      } else if (x >= 150 && x < 330 && y >= 390 && y < 446 && (ui.selectedOpen || length >= 8))
+        joinNetwork(true);
+      dirty = true;
+    } else if (y >= 317 && y < 373) {
+      if (ui.connecting) {
+        WiFi.disconnect();
+        ui.connecting = false;
+        saveNetwork = false;
+        ui.wifiView = WifiView::Password;
+        dirty = true;
+      } else
+        scanWifi();
+    } else if (y >= 385 && y < 441)
       toggleWifi();
     break;
   default:
@@ -395,6 +451,12 @@ void tap(float x, float y) {
   }
 }
 void swipe(float dx, float dy) {
+  if (ui.page == Page::Wifi && ui.wifiView == WifiView::Networks && std::abs(dy) > std::abs(dx)) {
+    int last = std::max(0, (int(ui.networks.size()) - 1) / 3 * 3);
+    ui.networkOffset = std::clamp(ui.networkOffset + (dy < 0 ? 3 : -3), 0, last);
+    dirty = true;
+    return;
+  }
   if (std::abs(dx) > std::abs(dy)) {
     if (dx > 0)
       back();
@@ -464,7 +526,8 @@ void touchLoop() {
         dirty = true;
       }
     }
-    if (!wakeTouch && !brightnessDrag && !longTouch && now - touchStarted > 700 &&
+    if (!wakeTouch && !brightnessDrag && !longTouch &&
+        !(ui.page == Page::Wifi && ui.wifiView == WifiView::Password) && now - touchStarted > 700 &&
         std::hypot(touchX - startX, touchY - startY) < 25) {
       longTouch = true;
       setPage(Page::Face);
@@ -500,9 +563,12 @@ void touchLoop() {
     touchCoordinates(rawX, rawY, touchX, touchY, displayAngle);
     if (gesture == 5)
       tap(touchX, touchY);
-    else if (gesture == 0x0c)
-      setPage(Page::Face);
-    else if (gesture >= 1 && gesture <= 4) {
+    else if (gesture == 0x0c) {
+      if (ui.page == Page::Wifi && ui.wifiView == WifiView::Password)
+        tap(touchX, touchY);
+      else
+        setPage(Page::Face);
+    } else if (gesture >= 1 && gesture <= 4) {
       float dx = gesture == 3   ? -100
                  : gesture == 4 ? 100
                                 : 0,
@@ -516,17 +582,20 @@ void touchLoop() {
 }
 void status() {
   Serial.printf(
-      "{\"firmware\":\"round-lab-watch-0.1\",\"page\":\"%s\",\"awake\":%s,\"clock_valid\":%s,"
+      "{\"firmware\":\"round-lab-watch-0.2\",\"page\":\"%s\",\"awake\":%s,\"clock_valid\":%s,"
       "\"epoch\":%lld,\"touch_ok\":%s,\"touch_events\":%lu,\"touch_errors\":%lu,\"touch\":[%.0f,%."
       "0f],\"imu_ok\":%s,"
       "\"imu_errors\":%lu,\"angle_deg\":%.1f,\"raster_ms\":%.1f,\"wifi_enabled\":%s,\"wifi_"
-      "connected\":%s,\"portal\":%s,\"brightness\":%d,\"heap\":%u,\"psram\":%u}\n",
+      "connected\":%s,\"wifi_view\":%d,\"scanning\":%s,\"network_count\":%u,\"connecting\":%s,"
+      "\"ntp_synced_at\":%lld,\"brightness\":%d,\"heap\":%u,\"psram\":%u}\n",
       pageName(ui.page), asleep ? "false" : "true", clockOK ? "true" : "false",
       (long long)time(nullptr), touchOK ? "true" : "false", (unsigned long)touchEvents,
       (unsigned long)touchErrors, touchX, touchY, imuOK ? "true" : "false",
       (unsigned long)imuErrors, displayAngle * RAD_TO_DEG, rasterMs,
-      ui.wifiEnabled ? "true" : "false", ui.connected ? "true" : "false",
-      ui.portal ? "true" : "false", ui.brightness, ESP.getFreeHeap(), ESP.getFreePsram());
+      ui.wifiEnabled ? "true" : "false", ui.connected ? "true" : "false", int(ui.wifiView),
+      ui.scanning ? "true" : "false", unsigned(ui.networks.size()),
+      ui.connecting ? "true" : "false", (long long)ntpSyncedAt, ui.brightness, ESP.getFreeHeap(),
+      ESP.getFreePsram());
 }
 void serialLoop() {
   while (Serial.available()) {
@@ -617,7 +686,6 @@ void setup() {
   WiFi.persistent(false);
   WiFi.setHostname("round-lab");
   WiFi.setAutoReconnect(true);
-  setupPortalRoutes();
   if (ui.wifiEnabled) {
     WiFi.mode(WIFI_STA);
     startConnection();
@@ -654,7 +722,7 @@ void loop() {
     buzzerUntil = 0;
   }
   if (!asleep && ui.sleepSeconds && now - lastInteraction > uint32_t(ui.sleepSeconds * 1000) &&
-      !ui.portal)
+      !(ui.page == Page::Wifi && (ui.wifiView == WifiView::Password || ui.connecting)))
     screenOff();
   time_t epoch = time(nullptr);
   if (epoch != shownSecond) {

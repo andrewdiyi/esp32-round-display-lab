@@ -1,18 +1,31 @@
 #pragma once
 #include "ClockFace.h"
+#include <vector>
 
 enum class Page { Face, Apps, Controls, Settings, Stopwatch, Timer, Sensors, Info, Wifi };
+enum class WifiView { Status, Networks, Password };
+struct WifiNetwork {
+  char ssid[33];
+  int rssi;
+  bool open, supported;
+};
 struct WatchState {
   Page page = Page::Face;
-  bool rotate = true, format24 = true, wifiEnabled = false, connected = false, portal = false;
+  bool rotate = true, format24 = true, wifiEnabled = false, connected = false;
   bool clockValid = false, stopwatchRunning = false, timerRunning = false, timerDone = false;
   int brightness = 55, sleepSeconds = 30, hour = 0, minute = 0, second = 0, month = 1, day = 1,
       weekday = 0;
   uint32_t stopwatchMs = 0, timerMs = 180000, freeHeap = 0, freePsram = 0, uptime = 0;
   int flashMB = 16, psramMB = 8, cpuMHz = 240, rssi = 0;
   float ax = 0, ay = 0, az = 0, gx = 0, gy = 0, gz = 0, battery = 0;
-  char network[40] = "No network saved", ip[24] = "", apName[24] = "", apPassword[16] = "";
-  char wifiMessage[48] = "Set up a 2.4 GHz network";
+  char network[33] = "", ip[24] = "";
+  char wifiMessage[48] = "Choose a 2.4 GHz network";
+  WifiView wifiView = WifiView::Status;
+  std::vector<WifiNetwork> networks;
+  int networkOffset = 0, keyboardMode = 0;
+  bool scanning = false, connecting = false, connectionFailed = false, uppercase = false,
+       showPassword = false, selectedOpen = false;
+  char selectedSSID[33] = "", password[64] = "";
 };
 
 namespace watchui {
@@ -77,6 +90,46 @@ inline void arc(uint16_t *p, float x, float y, float r, float start, float end, 
 inline void button(uint16_t *p, const char *s, int x, int y, int w, uint16_t color) {
   rounded(p, x - w / 2, y, w, 56, 25, color);
   label(p, s, x, y + 13, smallFont, fg);
+}
+// Network names are external text: fit them to the round display. The bundled
+// English font shows unsupported Unicode characters as '?' without changing SSID bytes.
+inline void networkName(uint16_t *p, const char *name, int x, int y, int maxWidth, uint16_t color,
+                        bool centered = true) {
+  char text[40];
+  int n = 0, width = 0;
+  for (const unsigned char *c = (const unsigned char *)name; *c; c++) {
+    if ((*c & 0xc0) == 0x80)
+      continue;
+    char ch = *c >= 32 && *c < 127 ? *c : '?';
+    if (width + smallFont.glyphs[ch - 32].advance > maxWidth - 20) {
+      text[n++] = '.';
+      text[n++] = '.';
+      break;
+    }
+    text[n++] = ch;
+    width += smallFont.glyphs[ch - 32].advance;
+  }
+  text[n] = 0;
+  label(p, text, x, y, smallFont, color, centered);
+}
+inline const char *keyboardRow(int mode, bool uppercase, int row) {
+  const char *letters[] = {"qwertyuiop", "asdfghjkl", "zxcvbnm"};
+  const char *capitals[] = {"QWERTYUIOP", "ASDFGHJKL", "ZXCVBNM"};
+  const char *numbers[] = {"1234567890", "!@#$%^&*()", "-_=+[]{}"};
+  const char *symbols[] = {"\\|;:'\",.<>", "/?`~", "-_=+[]{}"};
+  return mode == 1   ? numbers[row]
+         : mode == 2 ? symbols[row]
+                     : (uppercase ? capitals[row] : letters[row]);
+}
+inline char keyboardCharacter(const WatchState &s, float x, float y) {
+  for (int row = 0; row < 3; row++) {
+    const char *keys = keyboardRow(s.keyboardMode, s.uppercase, row);
+    int left = 240 - std::strlen(keys) * 20;
+    if (y >= 190 + row * 48 && y < 232 + row * 48 && x >= left &&
+        x < left + int(std::strlen(keys)) * 40)
+      return keys[int(x - left) / 40];
+  }
+  return 0;
 }
 inline void heading(uint16_t *p, const char *title) {
   line(p, 116, 65, 104, 77, 3, cyan);
@@ -282,7 +335,7 @@ inline void draw(uint16_t *p, const WatchState &s) {
     std::snprintf(values[2], 36, "%lu KB", (unsigned long)(s.freeHeap / 1024));
     std::snprintf(values[3], 36, "%.1f MB", s.freePsram / 1048576.f);
     std::snprintf(values[4], 36, "%.2f V", s.battery);
-    std::strcpy(values[5], "Round Lab 0.1");
+    std::strcpy(values[5], "Round Lab 0.2");
     for (int i = 0; i < 6; i++) {
       int y = 211 + i * 31;
       label(p, names[i], 98, y, smallFont, dim, false);
@@ -291,26 +344,81 @@ inline void draw(uint16_t *p, const WatchState &s) {
     return;
   }
   if (s.page == Page::Wifi) {
-    heading(p, "Wi-Fi");
-    if (s.portal) {
-      label(p, "Connect your phone to", 240, 115, smallFont, dim);
-      label(p, s.apName, 240, 153, mediumFont, cyan);
-      label(p, "Password", 240, 202, smallFont, dim);
-      label(p, s.apPassword, 240, 230, mediumFont, fg);
-      label(p, "Then open 192.168.4.1", 240, 282, smallFont, dim);
-      label(p, s.connected ? "Connected" : s.wifiMessage, 240, 315, smallFont,
-            s.connected ? green : cyan);
-      button(p, "Close setup", 240, 355, 208, card);
+    heading(p, s.wifiView == WifiView::Password ? (s.connectionFailed ? "Try again" : "Password")
+                                                : "Wi-Fi");
+    if (s.wifiView == WifiView::Networks) {
+      if (s.scanning) {
+        icon(p, Page::Wifi, 240, 210, blue);
+        label(p, "Scanning...", 240, 280, mediumFont, fg);
+      } else if (s.networks.empty()) {
+        label(p, "No networks found", 240, 195, mediumFont, fg);
+        label(p, s.wifiMessage, 240, 250, smallFont, dim);
+      } else {
+        std::snprintf(text, sizeof(text), "%d-%d of %d  /  Swipe to scroll", s.networkOffset + 1,
+                      std::min(s.networkOffset + 3, int(s.networks.size())),
+                      int(s.networks.size()));
+        label(p, text, 240, 104, smallFont, dim);
+        for (int row = 0; row < 3 && s.networkOffset + row < int(s.networks.size()); row++) {
+          const auto &net = s.networks[s.networkOffset + row];
+          int y = 140 + row * 74;
+          rounded(p, 82, y, 316, 66, 18, card);
+          networkName(p, net.ssid, 100, y + 7, 280, fg, false);
+          std::snprintf(text, sizeof(text), "%s   %d dBm",
+                        !net.supported ? "Unsupported"
+                        : net.open     ? "Open"
+                                       : "Password",
+                        net.rssi);
+          label(p, text, 100, y + 36, smallFont, net.supported ? dim : red, false);
+        }
+      }
+      button(p, s.scanning ? "Scanning" : "Rescan", 240, 385, 176, card);
+    } else if (s.wifiView == WifiView::Password) {
+      networkName(p, s.selectedSSID, 240, 106, 290, cyan);
+      int length = std::strlen(s.password);
+      rounded(p, 92, 140, 224, 37, 12, card);
+      if (!length)
+        std::strcpy(text, s.selectedOpen ? "Open network" : "8-63 characters");
+      else if (s.showPassword)
+        std::snprintf(text, sizeof(text), "%s", s.password + std::max(0, length - 16));
+      else {
+        std::memset(text, '*', std::min(length, 16));
+        text[std::min(length, 16)] = 0;
+      }
+      networkName(p, text, 204, 147, 210, length ? fg : dim);
+      label(p, s.showPassword ? "Hide" : "Show", 350, 147, smallFont, cyan);
+      for (int row = 0; row < 3; row++) {
+        const char *keys = keyboardRow(s.keyboardMode, s.uppercase, row);
+        int left = 240 - std::strlen(keys) * 20;
+        for (int i = 0; keys[i]; i++) {
+          rounded(p, left + i * 40 + 2, 190 + row * 48, 36, 42, 9, card);
+          char key[] = {keys[i], 0};
+          label(p, key, left + i * 40 + 20, 199 + row * 48, smallFont, fg);
+        }
+      }
+      const char *controls[] = {"Shift",
+                                s.keyboardMode == 0   ? "123"
+                                : s.keyboardMode == 1 ? "#+="
+                                                      : "ABC",
+                                "Space", "Del"};
+      const int centers[] = {100, 180, 265, 355}, widths[] = {72, 70, 86, 70};
+      for (int i = 0; i < 4; i++) {
+        rounded(p, centers[i] - widths[i] / 2, 334, widths[i], 42, 12,
+                i == 0 && s.uppercase ? rgb(20, 94, 148) : card);
+        label(p, controls[i], centers[i], 344, smallFont, fg);
+      }
+      button(p, "Connect", 240, 390, 180, s.selectedOpen || length >= 8 ? rgb(20, 94, 148) : card);
     } else {
-      icon(p, Page::Wifi, 240, 158, s.connected ? blue : card);
+      icon(p, Page::Wifi, 240, 151, s.connected ? blue : card);
       label(p,
             s.connected     ? "Connected"
+            : s.connecting  ? "Connecting..."
             : s.wifiEnabled ? "Not connected"
                             : "Wi-Fi off",
-            240, 216, mediumFont, fg);
-      label(p, s.connected ? s.ip : s.wifiMessage, 240, 259, smallFont, dim);
-      button(p, "Set up Wi-Fi", 240, 303, 246, rgb(20, 94, 148));
-      button(p, s.wifiEnabled ? "Turn off" : "Turn on", 240, 371, 190, card);
+            240, 206, mediumFont, fg);
+      networkName(p, s.connected ? s.network : s.selectedSSID, 240, 247, 300, cyan);
+      label(p, s.connected ? s.ip : s.wifiMessage, 240, 278, smallFont, dim);
+      button(p, s.connecting ? "Cancel" : "Scan networks", 240, 317, 246, rgb(20, 94, 148));
+      button(p, s.wifiEnabled ? "Turn off" : "Turn on", 240, 385, 190, card);
     }
   }
 }
