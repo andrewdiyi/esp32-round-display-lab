@@ -107,4 +107,4 @@ build/watch-shell/preview-ui build/watch-shell/preview
 
 0.2 版移除网页配网，加入设备端扫描和密码键盘。已编译、刷入并校验，实机扫描到 5 个网络并检查了列表 framebuffer；字母和符号键盘通过同源绘图预览检查。用户已在圆屏上输入真实网络密码并确认显示 Connected；串口确认 `wifi_connected=true`、`connecting=false`、`clock_valid=true`，且 `ntp_synced_at` 已记录成功的 NTP 同步时间。该次检查触摸和 IMU 错误计数均为 0。
 
-0.3 版加入 Weather、表盘校时状态和手动 NTP 入口，并将 Sensors / Wi-Fi / Device 移入 Settings。已完成固件编译、刷写校验、最终固件重启后的保存网络自动连接、自动 NTP 校时、HTTPS 真实天气获取；手动 NTP 请求后同步时间戳更新且 `time_syncing=false`。新加坡当前天气通过设备 framebuffer 检查，未来五天数据通过响应解析，页面排版通过同源预览检查。
+0.3 版加入 Weather、表盘校时状态和手动 NTP 入口，并将 Sensors / Wi-Fi / Device 移入 Settings。已完成固件编译、刷写校验、最终固件重启后的保存网络自动连接、自动 NTP 校时、HTTPS 真实天气获取；手动 NTP 请求后同步时间戳更新且 `time_syncing=false`。新加坡当前天气通过设备 framebuffer 检查，未来五天数据通过响应解析，页面排版通过同源预览检查。用户进一步实机确认：点击 5 days 查看预报、进入 Settings 中的 Sensors / Wi-Fi / Device，以及页面显示、点击和返回均正常。
