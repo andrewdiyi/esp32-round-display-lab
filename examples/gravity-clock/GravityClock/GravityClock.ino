@@ -12,12 +12,13 @@ Vec3 acceleration, rotationRate;
 uint8_t imuAddress = 0x6b;
 bool imuOK = false, clockOK = false, stream = false;
 uint32_t imuErrors = 0, frames = 0, lastSample = 0, lastFrame = 0, lastLog = 0;
-float lastAngle = 999, frameMs = 0;
+float lastAngle = 999, frameMs = 0, rasterMs = 0;
 time_t drawnSecond = -1;
 uint16_t *canvas = nullptr, *framebuffers[2] = {nullptr, nullptr}, *lastPixels = nullptr;
 int nextBuffer = 1;
 SemaphoreHandle_t vsyncSignal;
 String command;
+face::RotationCache rotationCache;
 
 bool IRAM_ATTR clockVsync(esp_lcd_panel_handle_t, const esp_lcd_rgb_panel_event_data_t *, void *) {
   BaseType_t wake = pdFALSE;
@@ -103,16 +104,17 @@ void sampleIMU() {
   orientation.update(acceleration, rotationRate, dt);
 }
 void status() {
-  Serial.printf("{\"firmware\":\"gravity-clock-1\",\"epoch\":%lld,\"clock_valid\":%s,\"imu_ok\":%s,"
-                "\"accel\":[%.4f,%.4f,%.4f],\"gyro\":[%.3f,%.3f,%.3f],\"angle_deg\":%.2f,\"raw_"
-                "deg\":%.2f,\"offset_deg\":%.2f,\"handedness\":%.0f,\"tracking\":%s,\"frames\":%lu,"
-                "\"render_ms\":%.1f,\"imu_errors\":%lu,\"psram_free\":%u}\n",
-                (long long)time(nullptr), clockOK ? "true" : "false", imuOK ? "true" : "false",
-                acceleration.x, acceleration.y, acceleration.z, rotationRate.x, rotationRate.y,
-                rotationRate.z, orientation.angle * RAD_TO_DEG, orientation.rawAngle() * RAD_TO_DEG,
-                orientation.offset * RAD_TO_DEG, orientation.handedness,
-                orientation.tracking ? "true" : "false", (unsigned long)frames, frameMs,
-                (unsigned long)imuErrors, ESP.getFreePsram());
+  Serial.printf(
+      "{\"firmware\":\"gravity-clock-2-aa\",\"epoch\":%lld,\"clock_valid\":%s,\"imu_ok\":%s,"
+      "\"accel\":[%.4f,%.4f,%.4f],\"gyro\":[%.3f,%.3f,%.3f],\"angle_deg\":%.2f,\"raw_"
+      "deg\":%.2f,\"offset_deg\":%.2f,\"handedness\":%.0f,\"tracking\":%s,\"frames\":%lu,"
+      "\"render_ms\":%.1f,\"raster_ms\":%.1f,\"imu_errors\":%lu,\"psram_free\":%u}\n",
+      (long long)time(nullptr), clockOK ? "true" : "false", imuOK ? "true" : "false",
+      acceleration.x, acceleration.y, acceleration.z, rotationRate.x, rotationRate.y,
+      rotationRate.z, orientation.angle * RAD_TO_DEG, orientation.rawAngle() * RAD_TO_DEG,
+      orientation.offset * RAD_TO_DEG, orientation.handedness,
+      orientation.tracking ? "true" : "false", (unsigned long)frames, frameMs, rasterMs,
+      (unsigned long)imuErrors, ESP.getFreePsram());
 }
 void saveOrientation() {
   settings.putFloat("offset", orientation.offset);
@@ -233,9 +235,11 @@ void loop() {
       gmtime_r(&local, &t);
       face::draw(canvas, t.tm_hour, t.tm_min, t.tm_sec, t.tm_mon + 1, t.tm_mday, t.tm_wday,
                  clockOK);
+      rotationCache.prepare(canvas);
       drawnSecond = epoch;
     }
-    face::rotate(canvas, framebuffers[nextBuffer], orientation.angle);
+    face::rotate(canvas, framebuffers[nextBuffer], orientation.angle, &rotationCache);
+    rasterMs = (micros() - start) / 1000.f;
     xSemaphoreTake(vsyncSignal, 0);
     ESP_ERROR_CHECK(
         esp_lcd_panel_draw_bitmap(panel_handle, 0, 0, 480, 480, framebuffers[nextBuffer]));
