@@ -10,6 +10,9 @@
 | 示例 | 功能 | 状态 |
 | --- | --- | --- |
 | [Gravity Clock](examples/gravity-clock) | 根据重力自动保持正立的数字时钟，含日期、秒刻度与 USB 校时 | 已完成实机方向与 RTC 重启验证；Barlow 字体公开版已刷入并检查运行状态和显示缓冲区 |
+| [Watch Shell](examples/watch-shell) | 英文手表界面、触摸应用网格、系统设置、秒表 / 计时器、传感器、硬件信息、Wi-Fi 配网 | 已刷入并确认画面居中、点击和滑动正常；实际联网与 NTP 待验证 |
+
+![Watch Shell preview](docs/watch-shell.png)
 
 ![Gravity clock preview](docs/gravity-clock.png)
 
@@ -36,9 +39,11 @@ git clone https://github.com/andrewdiyi/esp32-round-display-lab.git
 cd esp32-round-display-lab
 sh scripts/setup.sh
 .venv/bin/python scripts/build.py gravity-clock
+# 或构建手表界面
+.venv/bin/python scripts/build.py watch-shell
 ```
 
-构建时会下载并校验微雪官方演示包，生成本地显示驱动文件。下载或编译不会操作连接的设备。固件输出到 `build/gravity-clock/firmware/`。
+构建时会下载并校验微雪官方演示包，生成本地显示驱动文件。下载或编译不会操作连接的设备。固件输出到 `build/<示例名>/firmware/`。
 
 ### 备份与烧录
 
@@ -58,12 +63,12 @@ mkdir -p backups
 
 ```sh
 sh scripts/test.sh
-.venv/bin/ruff check scripts examples/gravity-clock/clock_control.py
-.venv/bin/ruff format --check scripts examples/gravity-clock/clock_control.py
+.venv/bin/ruff check scripts examples/*/*_control.py
+.venv/bin/ruff format --check scripts examples/*/*_control.py
 .venv/bin/python scripts/generate_fonts.py
 ```
 
-原生测试覆盖姿态角、跨 ±180°、平放保持、异常加速度和像素旋转，并生成 `build/tests/preview.png`。GitHub Actions 执行这些检查和 ESP32 固件编译。
+原生测试覆盖姿态角、跨 ±180°、平放保持、异常加速度和像素旋转，并生成 `build/tests/preview.png`。GitHub Actions 执行这些检查以及两个示例的 ESP32 固件编译。
 
 新增实验时，在 `examples/<name>/` 中放置 sketch 与 `example.json`，引用 `boards/` 下的板卡配置，再执行 `.venv/bin/python scripts/build.py <name>`。目前板卡驱动准备流程针对 ST7701 圆屏；换板时应增加相应配置与驱动处理。
 
@@ -71,6 +76,7 @@ sh scripts/test.sh
 
 - [板卡引脚与构建参数](boards/waveshare-esp32-s3-touch-lcd-2.1/README.md)
 - [时钟使用、串口协议及验证范围](examples/gravity-clock/README.md)
+- [手表界面、手势、Wi-Fi 配网及调试](examples/watch-shell/README.md)
 - [第三方来源与许可范围](THIRD_PARTY.md)
 
 仓库尚未为自编代码指定统一开源许可证；公开可见不代表所有内容采用同一许可。字体附带 SIL OFL 1.1，微雪驱动从原站获取，详见来源说明。

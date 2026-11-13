@@ -5,7 +5,7 @@
 | MCU | ESP32-S3，240 MHz |
 | Flash / PSRAM | 16 MB / 8 MB OPI |
 | Display | ST7701，480×480，RGB565，16-bit RGB |
-| Touch | CST820，当前时钟未启用触摸 |
+| Touch | CST820，I²C 地址 0x15，Watch Shell 启用触摸 |
 | IMU | QMI8658，I²C 地址 0x6B（备选 0x6A） |
 | RTC | PCF85063，I²C 地址 0x51 |
 | IO expander | TCA9554，I²C 地址 0x20 |
@@ -21,6 +21,8 @@
 | RGB HSYNC / VSYNC / DE / PCLK | GPIO38 / GPIO39 / GPIO40 / GPIO41 |
 | RGB data 0–15 | 5, 45, 48, 47, 21, 14, 13, 12, 11, 10, 9, 46, 3, 8, 18, 17 |
 | Display reset / CS | TCA9554 EXIO1 / EXIO3 |
+| Touch interrupt / reset | GPIO16 / TCA9554 EXIO2 |
+| Battery voltage ADC | GPIO4 |
 | Buzzer control | TCA9554 EXIO8 |
 
 ## 构建约定

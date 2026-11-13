@@ -65,7 +65,7 @@ def main():
     for address, path in images:
         command += [address, str(path)]
     subprocess.run(command, check=True)
-    print("Flash verified. For gravity-clock, run clock_control.py --sync to initialize the RTC.")
+    print("Flash verified. Run the example's USB control tool with --sync to initialize the RTC.")
 
 
 if __name__ == "__main__":
