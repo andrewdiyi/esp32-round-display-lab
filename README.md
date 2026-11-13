@@ -10,7 +10,7 @@
 | 示例 | 功能 | 状态 |
 | --- | --- | --- |
 | [Gravity Clock](examples/gravity-clock) | 根据重力自动保持正立的数字时钟，含日期、秒刻度与 USB 校时 | 已完成实机方向与 RTC 重启验证；Barlow 字体公开版已刷入并检查运行状态和显示缓冲区 |
-| [Watch Shell](examples/watch-shell) | 英文手表界面、系统设置、内置应用、Wi-Fi 扫描与屏幕密码键盘 | 已刷入；应用触摸、网络扫描、屏幕密码输入、实际联网与 NTP 校时已验证 |
+| [Watch Shell](examples/watch-shell) | 英文手表界面、联网天气与校时、内置应用、Settings 内的传感器 / Wi-Fi / 设备信息 | 已刷入；Wi-Fi 配网与重启重连、自动 / 手动 NTP、真实天气获取已验证 |
 
 ![Watch Shell preview](docs/watch-shell.png)
 

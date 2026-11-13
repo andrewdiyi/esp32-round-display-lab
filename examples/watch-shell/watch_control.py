@@ -45,6 +45,7 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--port")
     p.add_argument("--sync", action="store_true")
+    p.add_argument("--ntp", action="store_true", help="Request time sync over Wi-Fi")
     p.add_argument(
         "--page",
         choices=[
@@ -57,6 +58,8 @@ def main():
             "sensors",
             "info",
             "wifi",
+            "weather",
+            "display",
         ],
     )
     p.add_argument("--wake", action="store_true")
@@ -67,6 +70,8 @@ def main():
         s.reset_input_buffer()
         if a.sync:
             print(transact(s, f"TIME {int(time.time())}", "OK TIME"))
+        if a.ntp:
+            print(transact(s, "NTP", "OK NTP"))
         if a.wake:
             print(transact(s, "WAKE", "OK WAKE"))
         if a.page:

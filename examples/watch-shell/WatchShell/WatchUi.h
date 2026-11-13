@@ -1,8 +1,21 @@
 #pragma once
 #include "ClockFace.h"
+#include "Weather.h"
 #include <vector>
 
-enum class Page { Face, Apps, Controls, Settings, Stopwatch, Timer, Sensors, Info, Wifi };
+enum class Page {
+  Face,
+  Apps,
+  Controls,
+  Settings,
+  Stopwatch,
+  Timer,
+  Sensors,
+  Info,
+  Wifi,
+  Weather,
+  DisplaySettings
+};
 enum class WifiView { Status, Networks, Password };
 struct WifiNetwork {
   char ssid[33];
@@ -26,6 +39,12 @@ struct WatchState {
   bool scanning = false, connecting = false, connectionFailed = false, uppercase = false,
        showPassword = false, selectedOpen = false;
   char selectedSSID[33] = "", password[64] = "";
+  time_t ntpSyncedAt = 0;
+  bool timeSyncing = false, weatherLoading = false;
+  int weatherCity = 0;
+  WeatherView weatherView = WeatherView::Now;
+  WeatherData weather;
+  char weatherMessage[48] = "Connect Wi-Fi for weather";
 };
 
 namespace watchui {
@@ -140,9 +159,45 @@ inline void toggle(uint16_t *p, int y, bool on) {
   rounded(p, 315, y, 58, 30, 15, on ? green : rgb(65, 75, 87));
   circle(p, on ? 358 : 330, y + 15, 11, fg);
 }
-inline void icon(uint16_t *p, Page page, int x, int y, uint16_t color) {
-  circle(p, x, y, 43, color);
+inline void weatherIcon(uint16_t *p, int code, bool isDay, float x, float y, float scale) {
+  if (code <= 2) {
+    circle(p, x - 10 * scale, y - 8 * scale, 16 * scale, isDay ? orange : fg);
+    if (isDay) {
+      for (int i = 0; i < 8; i++) {
+        float a = i * .78539816f;
+        line(p, x + (std::sin(a) * 22 - 10) * scale, y + (std::cos(a) * 22 - 8) * scale,
+             x + (std::sin(a) * 28 - 10) * scale, y + (std::cos(a) * 28 - 8) * scale, 3 * scale,
+             orange);
+      }
+    } else
+      circle(p, x - 2 * scale, y - 14 * scale, 14 * scale, bg);
+    if (code == 0)
+      return;
+  }
+  circle(p, x - 16 * scale, y + 5 * scale, 13 * scale, fg);
+  circle(p, x, y - 2 * scale, 18 * scale, fg);
+  circle(p, x + 18 * scale, y + 7 * scale, 12 * scale, fg);
+  line(p, x - 16 * scale, y + 12 * scale, x + 18 * scale, y + 12 * scale, 12 * scale, fg);
+  if (code >= 51) {
+    for (int i = -1; i <= 1; i++) {
+      float xx = x + i * 18 * scale;
+      line(p, xx, y + 24 * scale, xx - 5 * scale, y + 34 * scale, 3 * scale, cyan);
+      if ((code >= 71 && code <= 77) || code == 85 || code == 86)
+        line(p, xx - 6 * scale, y + 26 * scale, xx + 2 * scale, y + 31 * scale, 2 * scale, fg);
+    }
+    if (code >= 95) {
+      line(p, x + 6 * scale, y + 16 * scale, x - 3 * scale, y + 28 * scale, 5 * scale, orange);
+      line(p, x - 3 * scale, y + 28 * scale, x + 8 * scale, y + 28 * scale, 5 * scale, orange);
+    }
+  } else if (code == 45 || code == 48)
+    line(p, x - 25 * scale, y + 28 * scale, x + 25 * scale, y + 28 * scale, 3 * scale, dim);
+}
+inline void icon(uint16_t *p, Page page, int x, int y, uint16_t color, int radius = 43) {
+  circle(p, x, y, radius, color);
   switch (page) {
+  case Page::Weather:
+    weatherIcon(p, 2, true, x + 3, y + 2, .65f);
+    break;
   case Page::Face:
   case Page::Stopwatch:
   case Page::Timer:
@@ -155,6 +210,7 @@ inline void icon(uint16_t *p, Page page, int x, int y, uint16_t color) {
     }
     break;
   case Page::Settings:
+  case Page::DisplaySettings:
     for (int i = 0; i < 8; i++) {
       float a = i * 0.78539816f;
       line(p, x + std::sin(a) * 20, y - std::cos(a) * 20, x + std::sin(a) * 29,
@@ -190,13 +246,11 @@ struct App {
   int x, y;
   uint16_t color;
 };
-const App apps[] = {{Page::Face, "Clock", 240, 100, orange},
-                    {Page::Stopwatch, "Stopwatch", 120, 171, green},
-                    {Page::Timer, "Timer", 360, 171, orange},
-                    {Page::Wifi, "Wi-Fi", 240, 241, blue},
-                    {Page::Sensors, "Sensors", 120, 311, purple},
-                    {Page::Info, "Device", 360, 311, blue},
-                    {Page::Settings, "Settings", 240, 381, rgb(95, 110, 128)}};
+const App apps[] = {{Page::Face, "Clock", 175, 110, orange},
+                    {Page::Weather, "Weather", 305, 110, rgb(25, 110, 165)},
+                    {Page::Stopwatch, "Stopwatch", 130, 255, green},
+                    {Page::Timer, "Timer", 350, 255, orange},
+                    {Page::Settings, "Settings", 240, 390, rgb(95, 110, 128)}};
 inline void draw(uint16_t *p, const WatchState &s) {
   std::fill(p, p + 480 * 480, bg);
   char text[80];
@@ -208,8 +262,16 @@ inline void draw(uint16_t *p, const WatchState &s) {
            239.5f - std::cos(a) * 229, i % 5 ? 1.5f : 3,
            s.clockValid && i <= s.second ? cyan : card);
     }
-    label(p, s.connected ? "CONNECTED" : "ROUND LAB", 240, 67, smallFont,
-          s.connected ? green : dim);
+    if (s.timeSyncing)
+      std::strcpy(text, "SYNCING TIME");
+    else if (s.ntpSyncedAt && s.connected) {
+      time_t local = s.ntpSyncedAt + 8 * 3600;
+      struct tm t;
+      gmtime_r(&local, &t);
+      std::snprintf(text, sizeof(text), "SYNCED %02d:%02d", t.tm_hour, t.tm_min);
+    } else
+      std::strcpy(text, s.connected ? "ONLINE" : "RTC / OFFLINE");
+    label(p, text, 240, 67, smallFont, s.connected ? green : dim);
     const char *days[] = {"SUNDAY",   "MONDAY", "TUESDAY", "WEDNESDAY",
                           "THURSDAY", "FRIDAY", "SATURDAY"};
     label(p, days[s.weekday % 7], 240, 122, mediumFont, cyan);
@@ -257,6 +319,18 @@ inline void draw(uint16_t *p, const WatchState &s) {
   }
   if (s.page == Page::Settings) {
     heading(p, "Settings");
+    icon(p, Page::DisplaySettings, 160, 172, rgb(95, 110, 128));
+    label(p, "Display & time", 160, 223, smallFont, fg);
+    icon(p, Page::Wifi, 320, 172, blue);
+    label(p, "Wi-Fi", 320, 223, smallFont, fg);
+    icon(p, Page::Sensors, 160, 315, purple);
+    label(p, "Sensors", 160, 366, smallFont, fg);
+    icon(p, Page::Info, 320, 315, blue);
+    label(p, "Device", 320, 366, smallFont, fg);
+    return;
+  }
+  if (s.page == Page::DisplaySettings) {
+    heading(p, "Display & time");
     rounded(p, 90, 120, 300, 76, 22, card);
     label(p, "Brightness", 108, 128, smallFont, fg, false);
     line(p, 120, 174, 360, 174, 5, dim);
@@ -335,12 +409,92 @@ inline void draw(uint16_t *p, const WatchState &s) {
     std::snprintf(values[2], 36, "%lu KB", (unsigned long)(s.freeHeap / 1024));
     std::snprintf(values[3], 36, "%.1f MB", s.freePsram / 1048576.f);
     std::snprintf(values[4], 36, "%.2f V", s.battery);
-    std::strcpy(values[5], "Round Lab 0.2");
+    std::strcpy(values[5], "Round Lab 0.3");
     for (int i = 0; i < 6; i++) {
       int y = 211 + i * 31;
       label(p, names[i], 98, y, smallFont, dim, false);
       label(p, values[i], 315, y, smallFont, fg);
     }
+    return;
+  }
+  if (s.page == Page::Weather) {
+    heading(p, s.weatherView == WeatherView::Forecast ? "Next 5 days" : "Weather");
+    if (s.weatherView == WeatherView::Cities) {
+      label(p, "Choose city", 240, 112, smallFont, dim);
+      for (int i = 0; i < 3; i++)
+        button(p, weatherCities[i].name, 240, 160 + i * 80, 260,
+               i == s.weatherCity ? rgb(20, 94, 148) : card);
+      return;
+    }
+    label(p, weatherCities[s.weatherCity].name, 240, 105, smallFont, cyan);
+    if (!s.weather.valid) {
+      weatherIcon(p, 2, true, 240, 216, 1.3f);
+      label(p, s.weatherLoading ? "Loading weather..." : "Weather unavailable", 240, 288,
+            mediumFont, fg);
+      label(p, s.connected ? s.weatherMessage : "Connect Wi-Fi to update", 240, 330, smallFont,
+            dim);
+    } else if (s.weatherView == WeatherView::Forecast) {
+      const char *days[] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
+      for (int i = 1; i <= 5; i++) {
+        const auto &day = s.weather.days[i];
+        time_t local = day.date + 8 * 3600;
+        struct tm t;
+        gmtime_r(&local, &t);
+        int y = 142 + (i - 1) * 49;
+        std::snprintf(text, sizeof(text), "%s %02d", days[t.tm_wday], t.tm_mday);
+        label(p, text, 88, y, smallFont, fg, false);
+        weatherIcon(p, day.code, true, 205, y + 11, .43f);
+        std::snprintf(text, sizeof(text), "%.0f / %.0f", day.low, day.high);
+        label(p, text, 282, y, smallFont, fg);
+        std::snprintf(text, sizeof(text), "%d%%", day.rain);
+        label(p, text, 366, y, smallFont, cyan);
+      }
+      label(p, "Low / high C    Rain chance", 240, 389, smallFont, dim);
+      time_t local = s.weather.fetchedAt + 8 * 3600;
+      struct tm t;
+      gmtime_r(&local, &t);
+      std::snprintf(text, sizeof(text), "%s %02d/%02d %02d:%02d",
+                    !s.connected         ? "Offline"
+                    : s.weatherLoading   ? "Updating"
+                    : s.weather.error[0] ? "Update failed"
+                                         : "Updated",
+                    t.tm_mon + 1, t.tm_mday, t.tm_hour, t.tm_min);
+      label(p, text, 240, 415, smallFont, dim);
+    } else {
+      weatherIcon(p, s.weather.code, s.weather.isDay, 147, 189, 1.2f);
+      std::snprintf(text, sizeof(text), "%.0f", s.weather.temperature);
+      label(p, text, 285, 147, largeFont, fg);
+      label(p, "C", 359, 195, mediumFont, cyan);
+      label(p, weatherDescription(s.weather.code), 240, 254, mediumFont, fg);
+      std::snprintf(text, sizeof(text), "H %.0f / L %.0f C   Rain %d%%", s.weather.days[0].high,
+                    s.weather.days[0].low, s.weather.days[0].rain);
+      label(p, text, 240, 295, smallFont, dim);
+      std::snprintf(text, sizeof(text), "Feels %.0f C   Humidity %d%%", s.weather.feelsLike,
+                    s.weather.humidity);
+      label(p, text, 240, 323, smallFont, dim);
+    }
+    if (s.weather.valid && s.weatherView == WeatherView::Now) {
+      time_t local = s.weather.observedAt + 8 * 3600;
+      struct tm t;
+      gmtime_r(&local, &t);
+      std::snprintf(text, sizeof(text), "%s  %02d/%02d %02d:%02d",
+                    !s.connected         ? "Offline data"
+                    : s.weatherLoading   ? "Updating"
+                    : s.weather.error[0] ? "Update failed"
+                                         : "As of",
+                    t.tm_mon + 1, t.tm_mday, t.tm_hour, t.tm_min);
+      label(p, text, 240, 348, smallFont, dim);
+    }
+    if (s.weatherView == WeatherView::Now) {
+      button(p, "City", 150, 377, 110, card);
+      button(p,
+             s.weather.valid ? "5 days"
+             : s.connected   ? "Retry"
+                             : "Wi-Fi",
+             300, 377, 150, rgb(20, 94, 148));
+    }
+    // A tap on the source/status footer refreshes; attribution stays visible offline too.
+    label(p, "Open-Meteo.com", 240, 438, smallFont, dim);
     return;
   }
   if (s.page == Page::Wifi) {

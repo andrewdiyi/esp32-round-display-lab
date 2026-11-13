@@ -6,6 +6,7 @@
 #include "Display_ST7701.h"
 #include "Orientation.h"
 #include "WatchUi.h"
+#include "WeatherClient.h"
 
 WatchState ui;
 Preferences settings;
@@ -17,9 +18,12 @@ uint32_t imuErrors = 0, touchErrors = 0, lastSample = 0, lastInteraction = 0, la
          lastPoll = 0;
 uint32_t stopwatchBase = 0, stopwatchStarted = 0, timerDeadline = 0, timerSelected = 180000;
 uint32_t connectStarted = 0, lastSensorFrame = 0, buzzerUntil = 0;
-bool saveNetwork = false, ntpStarted = false;
+bool saveNetwork = false;
 time_t ntpSyncedAt = 0;
+QueueHandle_t weatherResults;
+uint32_t weatherLastAttempt = 0;
 volatile bool ntpPending = false, touchIRQ = false;
+volatile uint8_t wifiDisconnectReason = 0;
 bool touching = false, wakeTouch = false, longTouch = false, brightnessDrag = false;
 float startX = 0, startY = 0, touchX = 0, touchY = 0, touchAngle = 0, displayAngle = 0,
       menuAngle = 0;
@@ -40,6 +44,58 @@ bool IRAM_ATTR watchVsync(esp_lcd_panel_handle_t, const esp_lcd_rgb_panel_event_
 }
 void IRAM_ATTR touchInterrupt() { touchIRQ = true; }
 void timeSynchronized(struct timeval *) { ntpPending = true; }
+void requestTimeSync() {
+  if (!ui.connected)
+    return;
+  sntp_set_time_sync_notification_cb(timeSynchronized);
+  configTime(0, 0, "pool.ntp.org", "time.cloudflare.com");
+  sntp_set_sync_interval(3600000);
+  ui.timeSyncing = true;
+  dirty = true;
+}
+void weatherTask(void *argument) {
+  WeatherData result = fetchWeather(int(intptr_t(argument)));
+  xQueueSend(weatherResults, &result, portMAX_DELAY);
+  vTaskDelete(nullptr);
+}
+void requestWeather() {
+  if (ui.weatherLoading)
+    return;
+  if (!ui.connected || !ntpSyncedAt) {
+    strcpy(ui.weatherMessage,
+           ui.connected ? "Waiting for network time" : "Connect Wi-Fi for weather");
+    dirty = true;
+    return;
+  }
+  weatherLastAttempt = millis();
+  ui.weatherLoading = true;
+  strcpy(ui.weatherMessage, "Fetching forecast");
+  if (xTaskCreatePinnedToCore(weatherTask, "weather", 8192, (void *)intptr_t(ui.weatherCity), 1,
+                              nullptr, 0) != pdPASS) {
+    ui.weatherLoading = false;
+    strcpy(ui.weatherMessage, "Could not start weather request");
+  }
+  dirty = true;
+}
+void weatherLoop() {
+  WeatherData result;
+  if (xQueueReceive(weatherResults, &result, 0) == pdTRUE) {
+    ui.weatherLoading = false;
+    if (result.city == ui.weatherCity) {
+      if (result.valid) {
+        ui.weather = result;
+        ui.weatherMessage[0] = 0;
+      } else {
+        strlcpy(ui.weatherMessage, result.error, sizeof(ui.weatherMessage));
+        strlcpy(ui.weather.error, result.error, sizeof(ui.weather.error));
+      }
+      dirty = true;
+    }
+  }
+  if (ui.connected && ntpSyncedAt && !ui.weatherLoading &&
+      (!weatherLastAttempt || millis() - weatherLastAttempt >= 30 * 60 * 1000UL))
+    requestWeather();
+}
 
 // Hardware register and clock functions are kept beside this standalone sketch.
 bool readReg(uint8_t addr, uint8_t reg, uint8_t *data, size_t n) {
@@ -120,8 +176,8 @@ void sampleIMU() {
 }
 
 const char *pageName(Page page) {
-  const char *names[] = {"face",  "apps",    "controls", "settings", "stopwatch",
-                         "timer", "sensors", "info",     "wifi"};
+  const char *names[] = {"face",    "apps", "controls", "settings", "stopwatch", "timer",
+                         "sensors", "info", "wifi",     "weather",  "display"};
   return names[int(page)];
 }
 void setPage(Page page) {
@@ -134,12 +190,20 @@ void setPage(Page page) {
   lastInteraction = millis();
   if (page == Page::Wifi && !ui.connected && !ui.connecting)
     scanWifi();
+  if (page == Page::Weather &&
+      (!ui.weather.valid || millis() - weatherLastAttempt >= 30 * 60 * 1000UL))
+    requestWeather();
   if (page != Page::Wifi && !ui.connecting) {
     memset(ui.password, 0, sizeof(ui.password));
     ui.showPassword = false;
   }
 }
 void back() {
+  if (ui.page == Page::Weather && ui.weatherView != WeatherView::Now) {
+    ui.weatherView = WeatherView::Now;
+    dirty = true;
+    return;
+  }
   if (ui.page == Page::Wifi && ui.wifiView != WifiView::Status) {
     ui.wifiView = ui.wifiView == WifiView::Password ? WifiView::Networks : WifiView::Status;
     memset(ui.password, 0, sizeof(ui.password));
@@ -147,7 +211,11 @@ void back() {
     dirty = true;
     return;
   }
-  setPage(ui.page == Page::Apps || ui.page == Page::Controls ? Page::Face : Page::Apps);
+  if (ui.page == Page::Sensors || ui.page == Page::Wifi || ui.page == Page::Info ||
+      ui.page == Page::DisplaySettings)
+    setPage(Page::Settings);
+  else
+    setPage(ui.page == Page::Apps || ui.page == Page::Controls ? Page::Face : Page::Apps);
 }
 void screenOff() {
   asleep = true;
@@ -163,7 +231,7 @@ void saveSettings() {
   ESP_ERROR_CHECK(esp_lcd_rgb_panel_restart(panel_handle));
 }
 void joinNetwork(bool saveOnSuccess) {
-  WiFi.setAutoReconnect(false);
+  WiFi.setAutoReconnect(!saveOnSuccess);
   WiFi.disconnect();
   WiFi.mode(WIFI_STA);
   WiFi.setMinSecurity(ui.selectedOpen ? WIFI_AUTH_OPEN : WIFI_AUTH_WPA_PSK);
@@ -190,6 +258,12 @@ void startConnection() {
 void scanWifi() {
   if (ui.scanning)
     return;
+  if (!ui.connected) {
+    WiFi.setAutoReconnect(false);
+    WiFi.disconnect();
+    ui.connecting = false;
+    saveNetwork = false;
+  }
   if (!ui.wifiEnabled) {
     ui.wifiEnabled = true;
     settings.putBool("wifi", true);
@@ -217,7 +291,7 @@ void toggleWifi() {
     ui.wifiView = WifiView::Status;
     memset(ui.password, 0, sizeof(ui.password));
     saveNetwork = false;
-    ntpStarted = false;
+    ui.timeSyncing = false;
   }
   ESP_ERROR_CHECK(esp_lcd_rgb_panel_restart(panel_handle));
   dirty = true;
@@ -270,20 +344,19 @@ void networkLoop() {
       }
       memset(ui.password, 0, sizeof(ui.password));
       WiFi.setAutoReconnect(true);
-      if (!ntpStarted) {
-        sntp_set_time_sync_notification_cb(timeSynchronized);
-        configTime(0, 0, "pool.ntp.org", "time.cloudflare.com");
-        ntpStarted = true;
-      }
+      requestTimeSync();
     } else if (!ui.connecting)
       strcpy(ui.wifiMessage, "Disconnected. Reconnecting...");
   }
   if (ui.connecting && millis() - connectStarted > 20000) {
-    WiFi.disconnect();
     ui.connecting = false;
-    ui.connectionFailed = true;
-    strcpy(ui.wifiMessage, "Connection failed. Try again");
-    ui.wifiView = WifiView::Password;
+    if (saveNetwork) {
+      WiFi.disconnect();
+      ui.connectionFailed = true;
+      strcpy(ui.wifiMessage, "Connection failed. Try again");
+      ui.wifiView = WifiView::Password;
+    } else
+      strcpy(ui.wifiMessage, "Retrying saved network...");
     saveNetwork = false;
     dirty = true;
   }
@@ -291,6 +364,8 @@ void networkLoop() {
     ntpPending = false;
     ntpSyncedAt = time(nullptr);
     setClock(ntpSyncedAt);
+    ui.ntpSyncedAt = ntpSyncedAt;
+    ui.timeSyncing = false;
     dirty = true;
   }
 }
@@ -301,7 +376,13 @@ void tap(float x, float y) {
   }
   switch (ui.page) {
   case Page::Face:
-    setPage(Page::Apps);
+    if (y >= 55 && y < 105 && x >= 140 && x < 340) {
+      if (ui.connected)
+        requestTimeSync();
+      else
+        setPage(Page::Wifi);
+    } else
+      setPage(Page::Apps);
     break;
   case Page::Apps:
     for (const auto &app : watchui::apps)
@@ -326,6 +407,16 @@ void tap(float x, float y) {
       screenOff();
     break;
   case Page::Settings:
+    if (std::hypot(x - 160, y - 172) < 65)
+      setPage(Page::DisplaySettings);
+    else if (std::hypot(x - 320, y - 172) < 65)
+      setPage(Page::Wifi);
+    else if (std::hypot(x - 160, y - 315) < 65)
+      setPage(Page::Sensors);
+    else if (std::hypot(x - 320, y - 315) < 65)
+      setPage(Page::Info);
+    break;
+  case Page::DisplaySettings:
     if (y >= 120 && y < 200) {
       ui.brightness = std::clamp(int((x - 120) / 2.4f), 5, 100);
       Set_Backlight(ui.brightness);
@@ -446,11 +537,50 @@ void tap(float x, float y) {
     } else if (y >= 385 && y < 441)
       toggleWifi();
     break;
+  case Page::Weather:
+    if (ui.weatherView == WeatherView::Cities) {
+      for (int i = 0; i < 3; i++) {
+        if (x >= 110 && x < 370 && y >= 160 + i * 80 && y < 216 + i * 80) {
+          ui.weatherCity = i;
+          settings.putUInt("weatherCity", i);
+          ESP_ERROR_CHECK(esp_lcd_rgb_panel_restart(panel_handle));
+          ui.weather = WeatherData{};
+          ui.weatherView = WeatherView::Now;
+          weatherLastAttempt = 0;
+          requestWeather();
+          dirty = true;
+          break;
+        }
+      }
+    } else if (y >= 433 && x >= 140 && x < 340)
+      requestWeather();
+    else if (ui.weatherView == WeatherView::Now && y >= 377 && y < 433) {
+      if (x >= 95 && x < 205)
+        ui.weatherView = WeatherView::Cities;
+      else if (x >= 225 && x < 375) {
+        if (ui.weather.valid)
+          ui.weatherView = WeatherView::Forecast;
+        else if (ui.connected)
+          requestWeather();
+        else
+          setPage(Page::Wifi);
+      }
+      dirty = true;
+    }
+    break;
   default:
     break;
   }
 }
 void swipe(float dx, float dy) {
+  if (ui.page == Page::Weather && std::abs(dy) > std::abs(dx)) {
+    if (dy < 0 && ui.weather.valid)
+      ui.weatherView = WeatherView::Forecast;
+    else if (dy > 0)
+      requestWeather();
+    dirty = true;
+    return;
+  }
   if (ui.page == Page::Wifi && ui.wifiView == WifiView::Networks && std::abs(dy) > std::abs(dx)) {
     int last = std::max(0, (int(ui.networks.size()) - 1) / 3 * 3);
     ui.networkOffset = std::clamp(ui.networkOffset + (dy < 0 ? 3 : -3), 0, last);
@@ -461,7 +591,7 @@ void swipe(float dx, float dy) {
     if (dx > 0)
       back();
     else if (ui.page == Page::Face)
-      setPage(Page::Sensors);
+      setPage(Page::Weather);
   } else if (ui.page == Page::Face) {
     setPage(dy < 0 ? Page::Apps : Page::Controls);
   } else if (ui.page == Page::Apps && dy > 0)
@@ -514,7 +644,8 @@ void touchLoop() {
         Set_Backlight(ui.brightness);
         dirty = true;
       }
-      brightnessDrag = !wakeTouch && ui.page == Page::Settings && startY >= 120 && startY < 200;
+      brightnessDrag =
+          !wakeTouch && ui.page == Page::DisplaySettings && startY >= 120 && startY < 200;
     }
     touchCoordinates(rawX, rawY, touchX, touchY, touchAngle);
     lastInteraction = now;
@@ -582,20 +713,28 @@ void touchLoop() {
 }
 void status() {
   Serial.printf(
-      "{\"firmware\":\"round-lab-watch-0.2\",\"page\":\"%s\",\"awake\":%s,\"clock_valid\":%s,"
+      "{\"firmware\":\"round-lab-watch-0.3\",\"page\":\"%s\",\"awake\":%s,\"clock_valid\":%s,"
       "\"epoch\":%lld,\"touch_ok\":%s,\"touch_events\":%lu,\"touch_errors\":%lu,\"touch\":[%.0f,%."
       "0f],\"imu_ok\":%s,"
       "\"imu_errors\":%lu,\"angle_deg\":%.1f,\"raster_ms\":%.1f,\"wifi_enabled\":%s,\"wifi_"
       "connected\":%s,\"wifi_view\":%d,\"scanning\":%s,\"network_count\":%u,\"connecting\":%s,"
-      "\"ntp_synced_at\":%lld,\"brightness\":%d,\"heap\":%u,\"psram\":%u}\n",
+      "\"wifi_status\":%d,\"wifi_disconnect_reason\":%u,\"saved_password_length\":%u,"
+      "\"ntp_synced_at\":%lld,\"time_syncing\":%s,\"weather_valid\":%s,\"weather_loading\":%s,"
+      "\"weather_city\":\"%s\",\"weather_observed_at\":%lld,\"weather_fetched_at\":%lld,"
+      "\"weather_temperature\":%.1f,\"weather_error\":\"%s\",\"brightness\":%d,\"heap\":%u,"
+      "\"psram\":%u}\n",
       pageName(ui.page), asleep ? "false" : "true", clockOK ? "true" : "false",
       (long long)time(nullptr), touchOK ? "true" : "false", (unsigned long)touchEvents,
       (unsigned long)touchErrors, touchX, touchY, imuOK ? "true" : "false",
       (unsigned long)imuErrors, displayAngle * RAD_TO_DEG, rasterMs,
       ui.wifiEnabled ? "true" : "false", ui.connected ? "true" : "false", int(ui.wifiView),
       ui.scanning ? "true" : "false", unsigned(ui.networks.size()),
-      ui.connecting ? "true" : "false", (long long)ntpSyncedAt, ui.brightness, ESP.getFreeHeap(),
-      ESP.getFreePsram());
+      ui.connecting ? "true" : "false", int(WiFi.status()), unsigned(wifiDisconnectReason),
+      unsigned(settings.getString("password", "").length()), (long long)ntpSyncedAt,
+      ui.timeSyncing ? "true" : "false", ui.weather.valid ? "true" : "false",
+      ui.weatherLoading ? "true" : "false", weatherCities[ui.weatherCity].name,
+      (long long)ui.weather.observedAt, (long long)ui.weather.fetchedAt, ui.weather.temperature,
+      ui.weather.error, ui.brightness, ESP.getFreeHeap(), ESP.getFreePsram());
 }
 void serialLoop() {
   while (Serial.available()) {
@@ -610,12 +749,21 @@ void serialLoop() {
     command.trim();
     if (command == "STATUS")
       status();
-    else if (command.startsWith("TIME ")) {
+    else if (command == "RECONNECT") {
+      startConnection();
+      Serial.println("OK RECONNECT");
+    } else if (command == "NTP") {
+      if (ui.connected) {
+        requestTimeSync();
+        Serial.println("OK NTP REQUESTED");
+      } else
+        Serial.println("ERROR WIFI DISCONNECTED");
+    } else if (command.startsWith("TIME ")) {
       Serial.println(setClock(strtoll(command.c_str() + 5, nullptr, 10)) ? "OK TIME RTC"
                                                                          : "ERROR RTC WRITE");
       dirty = true;
     } else if (command.startsWith("PAGE ")) {
-      for (int i = 0; i <= int(Page::Wifi); i++)
+      for (int i = 0; i <= int(Page::DisplaySettings); i++)
         if (command.substring(5) == pageName(Page(i))) {
           setPage(Page(i));
           Serial.println("OK PAGE");
@@ -638,6 +786,7 @@ void serialLoop() {
   }
 }
 void setup() {
+  Serial.setTxBufferSize(2048); // Keep the complete diagnostic JSON in one USB transmit buffer.
   Serial.begin(115200);
   command.reserve(120);
   setenv("TZ", "UTC0", 1);
@@ -648,6 +797,9 @@ void setup() {
   ui.rotate = settings.getBool("rotate", true);
   ui.format24 = settings.getBool("format24", true);
   ui.wifiEnabled = settings.getBool("wifi", false);
+  ui.weatherCity = settings.getUInt("weatherCity", 0);
+  weatherResults = xQueueCreate(1, sizeof(WeatherData));
+  assert(weatherResults);
   orientation.offset = PI / 2;
   orientation.handedness = -1;
   I2C_Init();
@@ -684,6 +836,11 @@ void setup() {
   ui.psramMB = ESP.getPsramSize() / 1048576;
   ui.cpuMHz = getCpuFrequencyMhz();
   WiFi.persistent(false);
+  WiFi.onEvent(
+      [](WiFiEvent_t, WiFiEventInfo_t info) {
+        wifiDisconnectReason = info.wifi_sta_disconnected.reason;
+      },
+      ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
   WiFi.setHostname("round-lab");
   WiFi.setAutoReconnect(true);
   if (ui.wifiEnabled) {
@@ -702,6 +859,7 @@ void loop() {
   touchLoop();
   sampleIMU();
   networkLoop();
+  weatherLoop();
   uint32_t now = millis();
   if (ui.stopwatchRunning)
     ui.stopwatchMs = stopwatchBase + now - stopwatchStarted;
@@ -740,7 +898,7 @@ void loop() {
     ui.freePsram = ESP.getFreePsram();
     ui.uptime = now / 1000;
     ui.battery = analogReadMilliVolts(4) * 3.f / 1000.f / .992857f;
-    if (ui.page == Page::Face || ui.page == Page::Info || ui.page == Page::Wifi)
+    if (ui.page == Page::Face || ui.page == Page::Info)
       dirty = true;
     shownSecond = epoch;
   }

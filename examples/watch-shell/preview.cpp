@@ -20,23 +20,45 @@ int main(int argc, char **argv) {
   state.ax = .1f;
   state.ay = -.3f;
   state.az = .95f;
+  state.ntpSyncedAt = 1794550755;
   std::vector<uint16_t> pixels(480 * 480);
-  const char *names[] = {"face",      "apps",          "controls",      "settings",
-                         "stopwatch", "timer",         "sensors",       "info",
-                         "wifi",      "wifi-networks", "wifi-keyboard", "wifi-symbols"};
-  for (int i = 0; i < 12; i++) {
+  const char *names[] = {"face",          "apps",
+                         "controls",      "settings",
+                         "stopwatch",     "timer",
+                         "sensors",       "info",
+                         "wifi",          "wifi-networks",
+                         "wifi-keyboard", "wifi-symbols",
+                         "weather",       "weather-forecast",
+                         "weather-cities", "display"};
+  for (int i = 0; i < 16; i++) {
     state.page = i < 9 ? Page(i) : Page::Wifi;
     if (i == 9) {
       state.wifiView = WifiView::Networks;
       state.networks = {{"Home Wi-Fi", -42, false, true},
                         {"Guest network", -61, true, true},
                         {"A very long network name example", -75, false, true}};
-    } else if (i >= 10) {
+    } else if (i >= 10 && i < 12) {
       state.wifiView = WifiView::Password;
       std::strcpy(state.selectedSSID, "Home Wi-Fi");
       std::strcpy(state.password, "Preview123!");
       state.keyboardMode = i == 11 ? 2 : 0;
-    }
+    } else if (i >= 12 && i < 15) {
+      state.page = Page::Weather;
+      state.connected = true;
+      state.weatherView = WeatherView(i - 12);
+      state.weather.valid = true;
+      state.weather.temperature = 29;
+      state.weather.feelsLike = 35;
+      state.weather.humidity = 81;
+      state.weather.code = 53;
+      state.weather.observedAt = 1794550500;
+      state.weather.fetchedAt = 1794550755;
+      const int codes[] = {95, 81, 82, 2, 0, 95};
+      for (int day = 0; day < 6; day++)
+        state.weather.days[day] = {time_t(1794499200 + day * 86400), 24.f - day * .2f,
+                                   32.f - day * .3f, codes[day], 96 - day * 10};
+    } else if (i == 15)
+      state.page = Page::DisplaySettings;
     watchui::draw(pixels.data(), state);
     std::ofstream file(std::string(argv[1]) + "/" + names[i] + ".ppm", std::ios::binary);
     file << "P6\n480 480\n255\n";
