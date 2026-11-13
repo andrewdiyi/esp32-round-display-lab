@@ -1,0 +1,12 @@
+{
+  "core": "esp32:esp32@3.0.7",
+  "fqbn": "esp32:esp32:esp32s3:PSRAM=opi,FlashSize=16M,PartitionScheme=app3M_fat9M_16MB,USBMode=hwcdc,CDCOnBoot=cdc,FlashMode=qio,CPUFreq=240",
+  "chip": "esp32s3",
+  "flash_mode": "dio",
+  "flash_freq": "80m",
+  "flash_size": "16MB",
+  "usb_vid": 12346,
+  "usb_pid": 4097,
+  "vendor_url": "https://files.waveshare.com/wiki/ESP32-S3-Touch-LCD-2.1/ESP32-S3-Touch-LCD-2.1-Demo.zip",
+  "vendor_sha256": "ddb55c65b37cc204f071b505abc7636504a657485ae9f3fabcf8bcd9418654aa"
+}

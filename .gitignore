@@ -1,0 +1,17 @@
+/.venv
+/.tools
+/.cache/
+/build/
+/backups/
+/round-screen/
+.DS_Store
+__pycache__/
+*.pyc
+.env
+.env.*
+!.env.example
+# Generated from the separately downloaded vendor demo.
+/examples/*/*/Display_ST7701.cpp
+/examples/*/*/Display_ST7701.h
+/examples/*/*/TCA9554PWR.cpp
+/examples/*/*/TCA9554PWR.h
