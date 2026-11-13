@@ -12,6 +12,9 @@ from prepare_board import ROOT, prepare
 
 
 def main():
+    # Arduino's Linux recipes invoke `python3 esptool.py`, ignoring the script's
+    # shebang. Ensure that interpreter comes from the same venv as esptool.
+    os.environ["PATH"] = str(ROOT / ".venv" / "bin") + os.pathsep + os.environ.get("PATH", "")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("example", nargs="?", default="gravity-clock")
     args = parser.parse_args()
