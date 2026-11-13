@@ -9,6 +9,7 @@
 #include "WeatherClient.h"
 
 WatchState ui;
+Page weatherReturnPage = Page::Apps;
 Preferences settings;
 Orientation orientation;
 Vec3 acceleration, rotationRate;
@@ -181,6 +182,8 @@ const char *pageName(Page page) {
   return names[int(page)];
 }
 void setPage(Page page) {
+  if (page == Page::Weather && ui.page != Page::Weather)
+    weatherReturnPage = ui.page;
   if (ui.page == Page::Face && page != Page::Face)
     menuAngle = ui.rotate ? std::round(orientation.angle / (PI / 2)) * (PI / 2) : 0;
   ui.page = page;
@@ -211,8 +214,10 @@ void back() {
     dirty = true;
     return;
   }
-  if (ui.page == Page::Sensors || ui.page == Page::Wifi || ui.page == Page::Info ||
-      ui.page == Page::DisplaySettings)
+  if (ui.page == Page::Weather)
+    setPage(weatherReturnPage);
+  else if (ui.page == Page::Sensors || ui.page == Page::Wifi || ui.page == Page::Info ||
+           ui.page == Page::DisplaySettings)
     setPage(Page::Settings);
   else
     setPage(ui.page == Page::Apps || ui.page == Page::Controls ? Page::Face : Page::Apps);

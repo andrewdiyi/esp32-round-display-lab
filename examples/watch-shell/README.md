@@ -14,7 +14,7 @@
 | 表盘下滑 | 快捷设置：Wi-Fi、表盘旋转、亮度、熄屏 |
 | 表盘左滑 | 天气 |
 | 点击表盘顶部校时状态 | 联网重新校时；离线时打开 Wi-Fi |
-| 点击表盘下方天气卡片 | 打开当前天气 |
+| 点击表盘下方天气卡片 | 打开当前天气；退出天气时返回表盘 |
 | 应用内右滑 / 左上角返回 | 返回上一级；Sensors / Wi-Fi / Device 返回 Settings |
 | 应用网格下滑或右滑 | 返回表盘 |
 | 长按约 0.7 秒 | 返回表盘 |
@@ -39,6 +39,8 @@
 主应用网格只保留 **Clock / Weather / Stopwatch / Timer / Settings**。Sensors、Wi-Fi、Device 位于 Settings 中。
 
 **Weather** 默认新加坡，显示当前温度、天气状况、体感温度、湿度、今日高低温与降雨概率。点击 **5 days** 或上滑查看未来五天的天气图标、每日高低温和降雨概率；右滑返回当前天气。**City** 可选择 Singapore / Shenzhen / Beijing，选择会保存到设备。
+
+天气按进入来源返回：从表盘天气卡片或左滑进入，退出时回到表盘；从应用列表进入，退出时回到应用列表。预报和城市选择页面先返回当前天气页。
 
 ![Weather and settings preview](../../docs/watch-weather.png)
 
