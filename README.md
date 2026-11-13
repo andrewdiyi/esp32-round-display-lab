@@ -9,7 +9,7 @@
 
 | 示例 | 功能 | 状态 |
 | --- | --- | --- |
-| [Gravity Clock](examples/gravity-clock) | 根据重力自动保持正立的数字时钟，含日期、秒刻度与 USB 校时 | 已完成实机方向与 RTC 重启验证；公开版字体替换后通过编译与本地渲染测试 |
+| [Gravity Clock](examples/gravity-clock) | 根据重力自动保持正立的数字时钟，含日期、秒刻度与 USB 校时 | 已完成实机方向与 RTC 重启验证；Barlow 字体公开版已刷入并检查运行状态和显示缓冲区 |
 
 ![Gravity clock preview](docs/gravity-clock.png)
 
